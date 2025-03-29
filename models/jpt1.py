@@ -99,7 +99,7 @@ class TransformerDecoderCustom(nn.Module):
         return x
 
 
-class JPT1Quantized(nn.Module):
+class JPT1(nn.Module):
     def __init__(
         self,
         seq_len: int,

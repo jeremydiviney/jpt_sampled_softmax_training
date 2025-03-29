@@ -743,7 +743,7 @@ if __name__ == "__main__":
 
         loss_fn = None
 
-        if output_type == JPT1QuantModelType.STANDARD_SAMPLED:
+        if output_type == JPT1ModelType.STANDARD_SAMPLED:
             loss_fn = CustomSampledLoss(ignore_index=tokenizer.token_to_id("[PAD]"), total_compare_tokens=total_compare_tokens)
         else:
             loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.token_to_id("[PAD]"))

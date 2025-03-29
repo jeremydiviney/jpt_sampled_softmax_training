@@ -89,6 +89,10 @@ def get_or_train_tokenizer(text_corpus: str | Iterable[str], vocab_size: int, to
     Returns:
         Tokenizer: A Hugging Face Tokenizers object.
     """
+
+    # Create directory for tokenizer if it doesn't exist
+    os.makedirs(os.path.dirname(tokenizer_path), exist_ok=True)
+
     if os.path.exists(tokenizer_path):
         # Load the tokenizer if it exists
         tokenizer = Tokenizer.from_file(tokenizer_path)
@@ -127,6 +131,9 @@ def get_or_train_tokenizer(text_corpus: str | Iterable[str], vocab_size: int, to
 
 def load_hf_dataset(dataset_name: str):
     cache_path = f"data_cache/{dataset_name}"
+    # Create cache directory if it doesn't exist
+    os.makedirs(cache_path, exist_ok=True)
+
     try:
         # Try to load from cache first
         dataset = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", cache_dir=cache_path)

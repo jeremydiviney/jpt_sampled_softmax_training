@@ -1,1 +1,8 @@
 .env
+.vscode
+data_cache
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+
