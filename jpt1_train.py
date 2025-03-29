@@ -24,7 +24,7 @@ from tokenizers import Tokenizer
 
 from sklearn.neighbors import KDTree
 
-from models.jpt1_quantizer import JPT1Quantized
+from models.jpt1 import JPT1
 
 from datasources.fineweb10B import get_or_train_tokenizer, Fineweb10BDataset
 from helpers.experiments import run_experiment, count_parameters, create_experiments
@@ -47,9 +47,9 @@ from helpers.distributed_utils import (
 
 from datasources.fineweb10B import load_hf_dataset, Fineweb10BDataset
 
-from models.jpt1_quantizer import JPT1QuantModelType
-from models.schedulers.empiriclaLRScheduler import EmpiricalLRScheduler
-from schedulers.oscillatingOneCycleLR import OscillatingOneCycleLR
+from models.jpt1 import JPT1ModelType
+
+
 from helpers.utilities import calculate_token_accuracy
 
 
@@ -524,10 +524,6 @@ def train_model(
     return model
 
 
-def verify_model_params(config: dict):
-    return
-
-
 def load_model(
     model: any,
     load_dir: str,
@@ -694,9 +690,7 @@ if __name__ == "__main__":
         "jpt_embed_dim": [768],
         "dropout": [0.0],
         "vocab_size": [50304],
-        "output_type": [
-            JPT1QuantModelType.STANDARD_SAMPLED,
-        ],
+        "output_type": [JPT1ModelType.STANDARD_SAMPLED],
         "grad_accum_size": [bs * 1024 * 4 * 5],
         "log_step_size": [bs * 1024 * 4 * 5 * 2],
         "dset_ratio": [1],

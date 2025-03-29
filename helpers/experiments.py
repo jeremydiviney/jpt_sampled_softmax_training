@@ -4,7 +4,7 @@ import glob
 import psutil
 from torch import nn
 import torch
-
+import os
 import wandb
 from helpers.distributed_utils import is_main_process
 
@@ -78,8 +78,13 @@ def run_experiment(projectName, train_model, exp_name, distributed, local_rank, 
 
     if is_main_process(distributed, local_rank):
 
+        wandb_key = os.environ.get("WANDB_API_KEY")
+
+        if wandb_key is None:
+            raise ValueError("WANDB_API_KEY is not set")
+
         # Initialize wandb
-        wandb.login(key="2a4c6ae7fe4efb074b06e1bb9eca12afba05e310")
+        wandb.login(key=wandb_key)
 
         wandb.init(
             project=projectName,
