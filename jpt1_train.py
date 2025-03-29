@@ -4,27 +4,26 @@ from datetime import datetime
 import time
 import sys
 import inspect
-
 import math
 
 from contextlib import contextmanager
 
-import numpy as np
-
+from dotenv import load_dotenv
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.multiprocessing as mp
+
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.amp import autocast
 import torch.nn.functional as F
-from torch.utils.data.dataset import Dataset
+
 from tokenizers import Tokenizer
 
-from sklearn.neighbors import KDTree
 
-from models.jpt1 import JPT1
+from datasources.fineweb10B import load_hf_dataset
+
+from models.jpt1 import JPT1, JPT1ModelType
 
 from datasources.fineweb10B import get_or_train_tokenizer, Fineweb10BDataset
 from helpers.experiments import run_experiment, count_parameters, create_experiments
@@ -45,12 +44,10 @@ from helpers.distributed_utils import (
 )
 
 
-from datasources.fineweb10B import load_hf_dataset, Fineweb10BDataset
-
-from models.jpt1 import JPT1ModelType
-
-
 from helpers.utilities import calculate_token_accuracy
+
+# Load environment variables
+load_dotenv()
 
 
 # --------------------------------------------------
@@ -85,7 +82,7 @@ def evaluate_model(
 
     norm_loss_fn = nn.CrossEntropyLoss(ignore_index=tokenizer.token_to_id("[PAD]"))
 
-    do_final_projection = raw_model.model_type != JPT1QuantModelType.STANDARD_SAMPLED
+    do_final_projection = raw_model.model_type != JPT1ModelType.STANDARD_SAMPLED
 
     for x, y in dataloader:
 
@@ -218,7 +215,7 @@ def inference_and_loss_step(model, x, y, loss_fn, do_final_projection: bool, dis
 
     logits = model_output
 
-    if model_type == JPT1QuantModelType.STANDARD_SAMPLED:
+    if model_type == JPT1ModelType.STANDARD_SAMPLED:
         if do_final_projection:
             loss = loss_fn(logits.view(-1, logits.size(-1)), y.view(-1))  # get model output logits in this case
         else:
@@ -346,7 +343,7 @@ def train_model(
     tokens_since_step = 0
     tokens_since_grad_accum = 0
 
-    do_final_projection = raw_model.model_type != JPT1QuantModelType.STANDARD_SAMPLED
+    do_final_projection = raw_model.model_type != JPT1ModelType.STANDARD_SAMPLED
 
     for epoch in range(config["epochs"]):
         batch_count = 0
@@ -770,7 +767,7 @@ if __name__ == "__main__":
         )
 
         # Create model
-        gpt_model = JPT1Quantized(
+        gpt_model = JPT1(
             token_space_dim=token_space_dim,
             seq_len=seq_len,
             embed_dim=jpt_embed_dim,

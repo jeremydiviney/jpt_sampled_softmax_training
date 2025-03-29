@@ -72,7 +72,6 @@ def build_selection_table(data, tokenizer, dataset_name: str):
         pickle.dump(lookup_table, f)
 
     print("build_selection_table completed!")
-    os._exit(0)
 
     return lookup_table
 

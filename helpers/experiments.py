@@ -1,10 +1,11 @@
 import time
 import glob
-
+import os
 import psutil
+
 from torch import nn
 import torch
-import os
+
 import wandb
 from helpers.distributed_utils import is_main_process
 
@@ -81,7 +82,7 @@ def run_experiment(projectName, train_model, exp_name, distributed, local_rank, 
         wandb_key = os.environ.get("WANDB_API_KEY")
 
         if wandb_key is None:
-            raise ValueError("WANDB_API_KEY is not set")
+            raise ValueError("WANDB_API_KEY is not set, please set it in the .env file")
 
         # Initialize wandb
         wandb.login(key=wandb_key)
