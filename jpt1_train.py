@@ -9,6 +9,7 @@ import math
 from contextlib import contextmanager
 
 from dotenv import load_dotenv
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -22,6 +23,11 @@ from tokenizers import Tokenizer
 
 
 from datasources.fineweb10B import load_hf_dataset
+
+from benchamarks.benchmark_hellaswag import evaluate_hellaswag
+from benchamarks.benchmark_arc import evaluate_arc_easy
+from benchamarks.benchmark_piqa import evaluate_piqa
+from benchamarks.benchmark_winogrande import evaluate_winogrande
 
 from models.jpt1 import JPT1, JPT1ModelType
 
@@ -50,9 +56,81 @@ from helpers.utilities import calculate_token_accuracy
 load_dotenv()
 
 
-# --------------------------------------------------
-# 2. Model Definition
-# --------------------------------------------------
+def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_rank: int, distributed: bool) -> dict:
+
+    # Ensure evaluation happens only on the main process
+    if not is_main_process(distributed, local_rank):
+        return {}
+
+    # Get the raw model if distributed
+    raw_model = model.module if distributed else model
+
+    # extractg sequence length from the model or dataset
+    model_seq_len = getattr(raw_model, "seq_len", 1024)  # Get seq_len from model
+
+    # Create a standard CrossEntropyLoss for benchmark likelihood evaluation
+    # Use the PAD token ID from the tokenizer
+    pad_token_id = tokenizer.token_to_id("[PAD]")
+    if pad_token_id is None:
+        print("Warning: [PAD] token not found in tokenizer, using ignore_index=-100 for benchmark loss.")
+        pad_token_id = -100  # Default ignore index if PAD not found
+
+    loss_fn_eval = nn.CrossEntropyLoss(ignore_index=pad_token_id)
+
+    # Define max samples for benchmarks (optional, set to None or a number)
+    max_benchmark_samples = None  # Limit samples for faster evaluation during training
+
+    # Run benchmarks
+    hellaswag_results = evaluate_hellaswag(
+        model=raw_model,
+        tokenizer=tokenizer,
+        loss_fn_eval=loss_fn_eval,
+        max_samples=max_benchmark_samples,
+        model_seq_len=model_seq_len,
+        device=device,
+    )
+    # arc_results = evaluate_arc_easy(  # Use evaluate_arc_easy as imported
+    #     model=raw_model,
+    #     tokenizer=tokenizer,
+    #     loss_fn_eval=loss_fn_eval,
+    #     max_samples=max_benchmark_samples,
+    #     model_seq_len=model_seq_len,
+    # )
+    # piqa_results = evaluate_piqa(
+    #     model=raw_model,
+    #     tokenizer=tokenizer,
+    #     loss_fn_eval=loss_fn_eval,
+    #     max_samples=max_benchmark_samples,
+    #     model_seq_len=model_seq_len,
+    # )
+    # winogrande_results = evaluate_winogrande(
+    #     model=raw_model,
+    #     tokenizer=tokenizer,
+    #     loss_fn_eval=loss_fn_eval,
+    #     max_samples=max_benchmark_samples,
+    #     model_seq_len=model_seq_len,
+    # )
+
+    # Combine results
+    all_results = {
+        "hellaswag": hellaswag_results,
+        # "arc_easy": arc_results,
+        # "piqa": piqa_results,
+        # "winogrande": winogrande_results,
+    }
+
+    # Optional: Print summary
+    print("\n--- Benchmark Results ---")
+    for name, result in all_results.items():
+        acc = result.get("accuracy", result.get(f"{name}_accuracy", "N/A"))
+        count = result.get("evaluated_samples", result.get(f"{name}_evaluated_samples", "N/A"))
+        if acc != "N/A":
+            print(f"{name.capitalize()}: Accuracy = {acc:.4f} ({count} samples)")
+        else:
+            print(f"{name.capitalize()}: No accuracy reported.")
+    print("-------------------------\n")
+
+    return all_results
 
 
 def evaluate_model(
@@ -466,6 +544,10 @@ def train_model(
                                 f"tokens_per_second: {tokens_per_second:.2f}"
                             )
 
+                        if log_step_count % 10 == 0 or log_step_count % 500 == 0:
+                            benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed)
+                            wandb.log(benchmark_results)
+
                     completion_percentage = log_step_count / logging_steps
                     scheduler.step()
 
@@ -674,7 +756,7 @@ if __name__ == "__main__":
 
         print(f"Initialized process {local_rank}/{world_size}")
 
-    bs = 24
+    bs = 16
     # Define experiments
     experiments: list[dict] = {
         "seq_len": [1024],
@@ -690,7 +772,7 @@ if __name__ == "__main__":
         "output_type": [JPT1ModelType.STANDARD_SAMPLED],
         "grad_accum_size": [bs * 1024 * 4 * 5],
         "log_step_size": [bs * 1024 * 4 * 5 * 2],
-        "dset_ratio": [1],
+        "dset_ratio": [0.05],
         "warmup_pct": [0.03],
         "grad_accum_max_at": [0.03],
         "early_end_pct": [None],
