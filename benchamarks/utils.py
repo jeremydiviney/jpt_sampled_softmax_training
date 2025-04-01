@@ -44,8 +44,12 @@ def calculate_span_loss(
         return float("inf")
 
     masked_labels = torch.where(loss_mask, flat_labels, torch.tensor(loss_fn_eval.ignore_index).to(device))
-    total_loss = loss_fn_eval(flat_logits, masked_labels)
-    average_loss_per_choice_token = total_loss * (flat_logits.size(0) / num_choice_tokens)
+    # Calculate element-wise loss (assuming reduction='none')
+    elementwise_loss = loss_fn_eval(flat_logits, masked_labels)  # Shape [seq_len-1]
+    # Sum the losses. Since ignored indices produce 0 loss, this effectively sums choice token losses.
+    sum_choice_loss = elementwise_loss.sum()
+    # Divide by the number of actual choice tokens to get the average loss for the choice span.
+    average_loss_per_choice_token = sum_choice_loss / num_choice_tokens
 
     return average_loss_per_choice_token.item()
 

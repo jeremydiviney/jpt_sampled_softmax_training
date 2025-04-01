@@ -75,10 +75,10 @@ def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_ra
         print("Warning: [PAD] token not found in tokenizer, using ignore_index=-100 for benchmark loss.")
         pad_token_id = -100  # Default ignore index if PAD not found
 
-    loss_fn_eval = nn.CrossEntropyLoss(ignore_index=pad_token_id)
+    loss_fn_eval = nn.CrossEntropyLoss(ignore_index=pad_token_id, reduction="none")
 
     # Define max samples for benchmarks (optional, set to None or a number)
-    max_benchmark_samples = None  # Limit samples for faster evaluation during training
+    max_benchmark_samples = 200  # Limit samples for faster evaluation during training
 
     # Run benchmarks
     hellaswag_results = evaluate_hellaswag(
@@ -544,7 +544,7 @@ def train_model(
                                 f"tokens_per_second: {tokens_per_second:.2f}"
                             )
 
-                        if log_step_count % 10 == 0 or log_step_count % 500 == 0:
+                        if log_step_count % 5 == 0 or log_step_count % 500 == 0:
                             benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed)
                             wandb.log(benchmark_results)
 
@@ -756,7 +756,7 @@ if __name__ == "__main__":
 
         print(f"Initialized process {local_rank}/{world_size}")
 
-    bs = 16
+    bs = 24
     # Define experiments
     experiments: list[dict] = {
         "seq_len": [1024],
