@@ -6,21 +6,6 @@ from datasets import load_dataset
 from tqdm import tqdm
 from typing import Optional, List, Tuple, Dict
 
-# Assume inference_step is defined elsewhere as provided
-# def inference_step(model: nn.Module, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-#     """ Wrapper around model inference. Returns logits. """
-#     # In the original code, it returned (logits, pre_output),
-#     # but only logits seem to be used. Adjust if pre_output is needed.
-#     # Using autocast directly in inference_step if model isn't already handling it.
-#     with torch.no_grad(), autocast(device_type=x.device.type, dtype=torch.bfloat16):
-#         # Assuming model(x) returns logits directly or (logits, ...)
-#         output = model(x)
-#         logits = output[0] if isinstance(output, tuple) else output
-#     return logits
-
-
-# --- Core Likelihood Calculation Helpers ---
-
 
 def prepare_tokens_and_choice_start(
     tokenizer: Tokenizer, context: str, choice: str, max_seq_len: int
@@ -199,8 +184,6 @@ def evaluate_hellaswag(
         raise ValueError("loss_fn_eval must have reduction='none' for batched span loss calculation.")
 
     pad_token_id = tokenizer.token_to_id("[PAD]")
-    if pad_token_id is None:
-        pad_token_id = 0  # Common fallback, check if appropriate for your tokenizer/model
 
     try:
         dataset = load_dataset("hellaswag", split="validation", trust_remote_code=True)
@@ -272,11 +255,9 @@ def evaluate_hellaswag(
         # 4. Run single batched inference step
         try:
             # Use autocast wrapper if not handled by model/inference_step
-            with torch.no_grad(), autocast(device_type=device.split(":")[0], dtype=torch.bfloat16):
+            with torch.no_grad(), autocast(device_type=device, dtype=torch.bfloat16):
                 logits, _ = model(input_ids_tensor, True)
-                # Handle potential tuple output from model
-                if isinstance(logits, tuple):
-                    logits = logits[0]  # Assuming logits are the first element
+
         except Exception as e:
             print(f"\nError during inference: {e}")
             # Handle potential OOM or other runtime errors

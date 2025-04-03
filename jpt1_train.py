@@ -25,8 +25,6 @@ from tokenizers import Tokenizer
 from datasources.fineweb10B import load_hf_dataset
 
 from benchamarks.benchmark_hellaswag import evaluate_hellaswag
-from benchamarks.benchmark_arc import evaluate_arc_easy
-from benchamarks.benchmark_piqa import evaluate_piqa
 from benchamarks.benchmark_winogrande import evaluate_winogrande
 
 from models.jpt1 import JPT1, JPT1ModelType
@@ -56,7 +54,7 @@ from helpers.utilities import calculate_token_accuracy
 load_dotenv()
 
 
-def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_rank: int, distributed: bool) -> dict:
+def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_rank: int, distributed: bool, final_run: bool) -> dict:
 
     # Ensure evaluation happens only on the main process
     if not is_main_process(distributed, local_rank):
@@ -78,7 +76,7 @@ def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_ra
     loss_fn_eval = nn.CrossEntropyLoss(ignore_index=pad_token_id, reduction="none")
 
     # Define max samples for benchmarks (optional, set to None or a number)
-    max_benchmark_samples = 200  # Limit samples for faster evaluation during training
+    max_benchmark_samples = None
 
     # Run benchmarks
     hellaswag_results = evaluate_hellaswag(
@@ -89,34 +87,18 @@ def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_ra
         model_seq_len=model_seq_len,
         device=device,
     )
-    # arc_results = evaluate_arc_easy(  # Use evaluate_arc_easy as imported
-    #     model=raw_model,
-    #     tokenizer=tokenizer,
-    #     loss_fn_eval=loss_fn_eval,
-    #     max_samples=max_benchmark_samples,
-    #     model_seq_len=model_seq_len,
-    # )
-    # piqa_results = evaluate_piqa(
-    #     model=raw_model,
-    #     tokenizer=tokenizer,
-    #     loss_fn_eval=loss_fn_eval,
-    #     max_samples=max_benchmark_samples,
-    #     model_seq_len=model_seq_len,
-    # )
-    # winogrande_results = evaluate_winogrande(
-    #     model=raw_model,
-    #     tokenizer=tokenizer,
-    #     loss_fn_eval=loss_fn_eval,
-    #     max_samples=max_benchmark_samples,
-    #     model_seq_len=model_seq_len,
-    # )
 
+    winogrande_results = evaluate_winogrande(
+        model=raw_model,
+        tokenizer=tokenizer,
+        loss_fn_eval=loss_fn_eval,
+        max_samples=max_benchmark_samples,
+        model_seq_len=model_seq_len,
+    )
     # Combine results
     all_results = {
         "hellaswag": hellaswag_results,
-        # "arc_easy": arc_results,
-        # "piqa": piqa_results,
-        # "winogrande": winogrande_results,
+        "winogrande": winogrande_results,
     }
 
     # Optional: Print summary
@@ -545,7 +527,7 @@ def train_model(
                             )
 
                         if log_step_count % 5 == 0 or log_step_count % 500 == 0:
-                            benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed)
+                            benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed, False)
                             wandb.log(benchmark_results)
 
                     completion_percentage = log_step_count / logging_steps
@@ -584,6 +566,9 @@ def train_model(
                 "epoch": epoch,
             }
         )
+
+        benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed, True)
+        wandb.log(benchmark_results)
 
         train_time_end = time.time()
         print(f"Training time: {train_time_end - train_time_start:.4f} seconds")
