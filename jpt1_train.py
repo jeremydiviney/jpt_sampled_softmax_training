@@ -526,7 +526,7 @@ def train_model(
                                 f"tokens_per_second: {tokens_per_second:.2f}"
                             )
 
-                        if log_step_count % 5 == 0 or log_step_count % 500 == 0:
+                        if log_step_count % 200 == 0:
                             benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed, False)
                             wandb.log(benchmark_results)
 
