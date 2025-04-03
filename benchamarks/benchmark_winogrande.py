@@ -21,9 +21,9 @@ def prepare_tokens_and_span_info(tokenizer: Tokenizer, context: str, choice: str
     tokenized_choice = tokenizer.encode(choice_prefix + choice, add_special_tokens=False).ids
     choice_len = len(tokenized_choice)
 
-    print(f"Context tokens: {len(tokenized_context)}, Choice tokens: {choice_len}")
-    print(f"Context: '{context[:30]}...'")
-    print(f"Choice: '{choice}'")
+    # print(f"Context tokens: {len(tokenized_context)}, Choice tokens: {choice_len}")
+    # print(f"Context: '{context[:30]}...'")
+    # print(f"Choice: '{choice}'")
 
     if choice_len == 0:
         print("  Invalid: Empty choice")
@@ -43,7 +43,7 @@ def prepare_tokens_and_span_info(tokenizer: Tokenizer, context: str, choice: str
         truncated_context_tokens = tokenized_context[-keep_context_len:]
         full_token_ids = truncated_context_tokens + tokenized_choice
         choice_start_index = len(truncated_context_tokens)  # Recalculate start index
-        print(f"  Truncated: Context from {len(tokenized_context)} to {len(truncated_context_tokens)} tokens")
+        # print(f"  Truncated: Context from {len(tokenized_context)} to {len(truncated_context_tokens)} tokens")
 
     # FIXED: Ensure the choice is not at the very end of the sequence
     # If the choice is at the end, we need to add a dummy token after it
@@ -53,20 +53,20 @@ def prepare_tokens_and_span_info(tokenizer: Tokenizer, context: str, choice: str
         if len(tokenized_context) > 0:
             dummy_token = tokenized_context[0]
             full_token_ids.append(dummy_token)
-            print(f"  Added dummy token at the end to allow loss calculation for the last choice token")
+            # print(f"  Added dummy token at the end to allow loss calculation for the last choice token")
         else:
             # If we don't have any context tokens, use a special token
             # This is a fallback and should rarely happen
             dummy_token = tokenizer.token_to_id("[SEP]") if tokenizer.token_to_id("[SEP]") is not None else 0
             full_token_ids.append(dummy_token)
-            print(f"  Added special token at the end to allow loss calculation for the last choice token")
+            p  # rint(f"  Added special token at the end to allow loss calculation for the last choice token")
 
     # Final check
     if choice_start_index >= len(full_token_ids) and choice_len > 0:
         print(f"  Invalid: Choice start index ({choice_start_index}) >= full length ({len(full_token_ids)})")
         return None
 
-    print(f"  Valid: Total tokens={len(full_token_ids)}, Choice start={choice_start_index}, Choice length={choice_len}")
+    # print(f"  Valid: Total tokens={len(full_token_ids)}, Choice start={choice_start_index}, Choice length={choice_len}")
     return full_token_ids, choice_start_index, choice_len
 
 
@@ -86,9 +86,9 @@ def calculate_batch_span_loss(
     device = logits.device
 
     # Debug info
-    print(f"Batch size: {batch_size}, Sequence length: {seq_len}")
-    print(f"Choice start indices: {choice_start_indices}")
-    print(f"Choice lengths: {choice_lengths}")
+    # print(f"Batch size: {batch_size}, Sequence length: {seq_len}")
+    # print(f"Choice start indices: {choice_start_indices}")
+    # print(f"Choice lengths: {choice_lengths}")
 
     # Shift logits and labels
     shift_logits = logits[..., :-1, :].contiguous()
@@ -133,7 +133,7 @@ def calculate_batch_span_loss(
         if mask_start <= mask_end:  # Changed from < to <= to handle single-token choices
             loss_mask[i, mask_start : mask_end + 1] = 1.0  # +1 to make the end inclusive
             num_tokens_per_item[i] = float(mask_end - mask_start + 1)  # +1 to count inclusive
-            print(f"  Valid mask: {mask_end - mask_start + 1} tokens")
+            # print(f"  Valid mask: {mask_end - mask_start + 1} tokens")
         else:
             print(f"  Invalid mask: mask_start > mask_end")
 
@@ -187,7 +187,7 @@ def evaluate_winogrande(
 
     # Get padding token ID
     pad_token_id = tokenizer.token_to_id("[PAD]")
-    print(f"Padding token ID: {pad_token_id}")
+    # print(f"Padding token ID: {pad_token_id}")
 
     # Load dataset
     try:
@@ -226,9 +226,9 @@ def evaluate_winogrande(
             prepared_choices.append(prep)
             if prep:
                 max_len = max(max_len, len(prep[0]))
-                print(f"Item {item_idx}, Choice {i}: Valid preparation with {len(prep[0])} tokens, start={prep[1]}, length={prep[2]}")
+                # print(f"Item {item_idx}, Choice {i}: Valid preparation with {len(prep[0])} tokens, start={prep[1]}, length={prep[2]}")
             else:
-                print(f"Item {item_idx}, Choice {i}: Invalid preparation")
+                # print(f"Item {item_idx}, Choice {i}: Invalid preparation")
                 invalid_choices += 1
 
         # Filter out invalid preparations and check if any choice is valid
@@ -251,12 +251,12 @@ def evaluate_winogrande(
             original_indices.append(original_idx)
 
         input_ids_tensor = torch.tensor(batch_input_ids, dtype=torch.long, device=device)
-        print(f"Batch shape: {input_ids_tensor.shape}")
+        # print(f"Batch shape: {input_ids_tensor.shape}")
 
         # Run Inference
         with torch.no_grad(), autocast(device_type=device.type, dtype=torch.bfloat16):
             logits, _ = model(input_ids_tensor, True)
-            print(f"Logits shape: {logits.shape}")
+            # print(f"Logits shape: {logits.shape}")
 
             # Calculate Losses
         batch_losses = calculate_batch_span_loss(
