@@ -76,7 +76,7 @@ def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_ra
     loss_fn_eval = nn.CrossEntropyLoss(ignore_index=pad_token_id, reduction="none")
 
     # Define max samples for benchmarks (optional, set to None or a number)
-    max_benchmark_samples = None
+    max_benchmark_samples = 100
 
     # Run benchmarks
     hellaswag_results = evaluate_hellaswag(
@@ -92,8 +92,8 @@ def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_ra
         model=raw_model,
         tokenizer=tokenizer,
         loss_fn_eval=loss_fn_eval,
-        max_samples=max_benchmark_samples,
         model_seq_len=model_seq_len,
+        max_samples=max_benchmark_samples,
     )
     # Combine results
     all_results = {
@@ -526,7 +526,7 @@ def train_model(
                                 f"tokens_per_second: {tokens_per_second:.2f}"
                             )
 
-                        if log_step_count % 200 == 0:
+                        if log_step_count % 5 == 0:
                             benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed, False)
                             wandb.log(benchmark_results)
 
@@ -741,7 +741,7 @@ if __name__ == "__main__":
 
         print(f"Initialized process {local_rank}/{world_size}")
 
-    bs = 24
+    bs = 16
     # Define experiments
     experiments: list[dict] = {
         "seq_len": [1024],

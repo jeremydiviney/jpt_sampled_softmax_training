@@ -45,6 +45,7 @@ def build_selection_table(data, tokenizer, dataset_name: str):
     cache_filename = f"meta_cache/jpt1/{dataset_name}/selection_table_vocab_{vocab_size}.pkl"
 
     if os.path.exists(cache_filename):
+        print(f"Loading selection table from cache: {cache_filename}")
         with open(cache_filename, "rb") as f:
             lookup_table = pickle.load(f)
         return lookup_table
@@ -56,22 +57,25 @@ def build_selection_table(data, tokenizer, dataset_name: str):
     total = 0
 
     batch_size = 1000
+    print("Building selection table...")
     for i in range(0, len(data), batch_size):
         batch_text = data[i : i + batch_size]["text"]
         # batch encode once for each chunk
         encoded_batch = tokenizer.encode_batch_fast(batch_text)
 
         for encoded_row in encoded_batch:
-            total += len(encoded_row.ids)
+            # Add 1 for the <EOT> token that will be appended later
+            total += len(encoded_row.ids) + 1
             lookup_table.append(total)
 
         if i % (10000) == 0:
-            print(f"build_selection_table: Processed {i} items")
+            print(f"build_selection_table: Processed {i}/{len(data)} items")
 
+    print("Saving selection table to cache...")
     with open(cache_filename, "wb") as f:
         pickle.dump(lookup_table, f)
 
-    print("build_selection_table completed!")
+    print(f"build_selection_table completed! Total tokens (incl. EOT): {total}")
 
     return lookup_table
 
@@ -110,11 +114,13 @@ def get_or_train_tokenizer(text_corpus: str | Iterable[str], vocab_size: int, to
         tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=True)
 
         # Define special tokens; these will be added to the vocabulary
-        special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+        special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "<EOT>"]  # Added <EOT>
         trainer = trainers.BpeTrainer(vocab_size=vocab_size, special_tokens=special_tokens, min_frequency=2)
 
+        print("Training tokenizer...")
         # Train the tokenizer on the corpus iterator
         tokenizer.train_from_iterator(corpus, trainer=trainer)
+        print("Tokenizer training complete.")
 
         # Set a decoder to handle the byte-level encoding (this will reassemble tokens correctly)
         tokenizer.decoder = decoders.ByteLevel()
@@ -125,6 +131,11 @@ def get_or_train_tokenizer(text_corpus: str | Iterable[str], vocab_size: int, to
         tokenizer.save(tokenizer_path)
         print(f"Trained and saved tokenizer to {tokenizer_path}")
         # os._exit(0)
+
+    # Verify EOT token exists after load/train
+    if tokenizer.token_to_id("<EOT>") is None:
+        raise ValueError("Failed to add or load '<EOT>' token in the tokenizer.")
+
     return tokenizer
 
 
@@ -135,10 +146,14 @@ def load_hf_dataset(dataset_name: str):
 
     try:
         # Try to load from cache first
+        print(f"Loading dataset '{dataset_name}' from Hugging Face...")
+        # Using the 10B sample as specified in the original code
         dataset = load_dataset("HuggingFaceFW/fineweb-edu", "sample-10BT", cache_dir=cache_path)
+        print("Dataset loaded.")
     except Exception as e:
-        print(f"Warning: Could not load dataset from Hugging Face: {e}")
-        # Fallback to local backup if it exists
+        print(f"Error: Could not load dataset '{dataset_name}' from Hugging Face: {e}")
+        # Fallback or error handling could be added here if necessary
+        raise  # Re-raise the exception if loading fails
 
     return dataset
 
@@ -160,28 +175,34 @@ class Fineweb10BDataset(Dataset):
         self.seq_len = seq_len
         self.data_stride = data_stride
         self.tokenizer = tokenizer
-        self.train_ratio = 4000
+        self.train_ratio = 4000  # Ratio used to split train/val from the master dataset indices
         self.dset_ratio = dset_ratio
         self.type = type
-        self.cache_size = cache_size
-        self.cache = {}  # Dictionary to store cached tokens
-        self.cache_priority = []  # Min-heap to track priorities for eviction
+        self.cache_size = cache_size  # Number of tokenized documents to keep in memory
+        self.cache = {}  # Dictionary to store cached tokens {data_row_idx: token_ids}
+        self.cache_priority = []  # Min-heap to track priorities (token_length, data_row_idx) for cache eviction
 
         self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
+        self.eot_token_id = self.tokenizer.token_to_id("<EOT>")
+        if self.pad_token_id is None:
+            raise ValueError("'<PAD>' token not found in tokenizer vocabulary.")
+        if self.eot_token_id is None:
+            raise ValueError("'<EOT>' token not found in tokenizer vocabulary.")
 
+        # Build or load the table mapping token index to document index and offset
         self.selection_table_master = build_selection_table(self.hf_dataset["train"], self.tokenizer, dataset_name)
 
         self.selection_table = []
         self.selection_table_indices = []
 
-        # Convert to numpy array if not already
+        # --- Splitting and Filtering Logic ---
         master_array = np.array(self.selection_table_master)
-        # Calculate token counts differences
+        # Calculate token counts for each document (including the EOT token added in build_selection_table)
         token_counts = np.diff(master_array, prepend=0)
         # Create an array of indices
         indices = np.arange(len(master_array))
 
-        # Apply train/validation split
+        # 1. Apply train/validation split based on index modulo train_ratio
         if self.type == "train":
             split_mask = (indices % self.train_ratio) != 0
         elif self.type == "validation":
@@ -189,21 +210,27 @@ class Fineweb10BDataset(Dataset):
         else:
             raise ValueError(f"Invalid dataset type: {self.type}")
 
-        # Apply dataset ratio - randomly select subset of data based on dset_ratio
+        # 2. Apply dataset ratio filtering *only* for the training set
         if self.dset_ratio < 1.0 and self.type == "train":
             # Use a fixed seed for deterministic selection
             rng = np.random.default_rng(42)  # Fixed seed for reproducibility
             # Create random mask with probability = dset_ratio
             ratio_mask = rng.random(len(indices)) < self.dset_ratio
-            # Combine both masks
-            mask = np.logical_and(split_mask, ratio_mask)
+            # Combine the split mask and ratio mask: an item must satisfy both
+            final_mask = np.logical_and(split_mask, ratio_mask)
+            print(f"Applying dset_ratio {self.dset_ratio}: retaining {np.sum(final_mask)}/{np.sum(split_mask)} training documents.")
         else:
-            mask = split_mask
+            # For validation or if dset_ratio is 1.0, just use the split mask
+            final_mask = split_mask
+            if self.type == "validation":
+                print(f"Retaining {np.sum(final_mask)} validation documents.")
+            else:
+                print(f"Using full training split ({np.sum(final_mask)} documents).")
 
-        # Apply mask to get selected indices
-        self.selection_table_indices = indices[mask]
-        # Calculate cumulative sums for selected tokens
-        self.selection_table = np.cumsum(token_counts[mask])
+        # Apply the final mask to get the indices of the documents we will use
+        self.selection_table_indices = indices[final_mask]
+        # Calculate the cumulative token counts *only for the selected documents*
+        self.selection_table = np.cumsum(token_counts[final_mask])
 
         self.token_list = tokenizer.get_vocab()
         self.token_count = self.selection_table[-1].item()
@@ -225,6 +252,9 @@ class Fineweb10BDataset(Dataset):
             # Get the full text from the dataset
             full_text = self.hf_dataset["train"][data_row_idx]["text"]
             full_idx_tokens = self.tokenizer.encode_batch_fast([full_text])[0].ids
+
+            # Append the EOT token to the document
+            full_idx_tokens = full_idx_tokens + [self.eot_token_id]
 
             # Cache management
             token_length = len(full_idx_tokens)

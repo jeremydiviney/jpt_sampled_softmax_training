@@ -4,156 +4,84 @@ from torch.amp import autocast
 from tokenizers import Tokenizer
 from datasets import load_dataset
 from tqdm import tqdm
-from typing import Dict, Optional, List, Tuple  # Keep necessary types
+from typing import Dict, Optional, List, Tuple, Union  # Keep necessary types
 
 # --- Helper Functions ---
 
 
-def prepare_tokens_and_span_info(tokenizer: Tokenizer, context: str, choice: str, max_seq_len: int) -> Optional[Tuple[List[int], int, int]]:
+def prepare_full_sentence_tokens(tokenizer: Tokenizer, full_text: str, max_seq_len: int) -> Optional[List[int]]:
     """
-    Tokenizes context and choice, combines, truncates prioritizing choice.
-    Returns UNPADDED token IDs, the start index of choice tokens,
-    and the number of choice tokens. Returns None if invalid.
-    (Adapted from the first version you provided)
+    Constructs the full sentence (context + choice), tokenizes it,
+    and truncates from the LEFT if necessary to fit max_seq_len.
+    Returns UNPADDED token IDs, or None if the choice is empty or
+    the sequence becomes invalid after truncation.
     """
-    choice_prefix = " "  # Ensure choice starts as a new "word"
-    tokenized_context = tokenizer.encode(context).ids
-    tokenized_choice = tokenizer.encode(choice_prefix + choice, add_special_tokens=False).ids
-    choice_len = len(tokenized_choice)
 
-    # print(f"Context tokens: {len(tokenized_context)}, Choice tokens: {choice_len}")
-    # print(f"Context: '{context[:30]}...'")
-    # print(f"Choice: '{choice}'")
+    tokenized_full = tokenizer.encode(full_text).ids
 
-    if choice_len == 0:
-        print("  Invalid: Empty choice")
-        return None  # Invalid choice
-
-    full_token_ids = tokenized_context + tokenized_choice
-    choice_start_index = len(tokenized_context)
-
-    # Truncation (prioritize keeping the choice)
-    if len(full_token_ids) > max_seq_len:
-        keep_context_len = max_seq_len - choice_len
-        if keep_context_len < 0:
-            print(f"  Invalid: Choice too long ({choice_len} > {max_seq_len})")
-            return None  # Choice itself is too long
-
-        # Truncate context from the left
-        truncated_context_tokens = tokenized_context[-keep_context_len:]
-        full_token_ids = truncated_context_tokens + tokenized_choice
-        choice_start_index = len(truncated_context_tokens)  # Recalculate start index
-        # print(f"  Truncated: Context from {len(tokenized_context)} to {len(truncated_context_tokens)} tokens")
-
-    # FIXED: Ensure the choice is not at the very end of the sequence
-    # If the choice is at the end, we need to add a dummy token after it
-    # so that we can calculate loss for the last token of the choice
-    if choice_start_index + choice_len == len(full_token_ids):
-        # Add a dummy token (e.g., the first token of the context)
-        if len(tokenized_context) > 0:
-            dummy_token = tokenized_context[0]
-            full_token_ids.append(dummy_token)
-            # print(f"  Added dummy token at the end to allow loss calculation for the last choice token")
-        else:
-            # If we don't have any context tokens, use a special token
-            # This is a fallback and should rarely happen
-            dummy_token = tokenizer.token_to_id("[SEP]") if tokenizer.token_to_id("[SEP]") is not None else 0
-            full_token_ids.append(dummy_token)
-            p  # rint(f"  Added special token at the end to allow loss calculation for the last choice token")
-
-    # Final check
-    if choice_start_index >= len(full_token_ids) and choice_len > 0:
-        print(f"  Invalid: Choice start index ({choice_start_index}) >= full length ({len(full_token_ids)})")
+    if not tokenized_full:  # Handle empty results from tokenizer
+        print(f"  Warning: Tokenization resulted in empty sequence for '{full_text[:50]}...'")
         return None
 
-    # print(f"  Valid: Total tokens={len(full_token_ids)}, Choice start={choice_start_index}, Choice length={choice_len}")
-    return full_token_ids, choice_start_index, choice_len
+    # Truncation (from the left)
+    if len(tokenized_full) > max_seq_len:
+        truncated_len = len(tokenized_full) - max_seq_len
+        token_ids = tokenized_full[truncated_len:]
+        # Optional: Add a check to ensure *some* part of the choice remains?
+        # This might be overly strict depending on the goal.
+        # print(f"  Truncated: Original {len(tokenized_full)} -> Kept {len(token_ids)}")
+    else:
+        token_ids = tokenized_full
+
+    return token_ids
 
 
-def calculate_batch_span_loss(
+def calculate_batch_full_sequence_loss(
     logits: torch.Tensor,  # Shape: [batch_size, seq_len, vocab_size]
     input_ids: torch.Tensor,  # Shape: [batch_size, seq_len]
-    choice_start_indices: List[int],  # List of start indices, len = batch_size
-    choice_lengths: List[int],  # List of choice lengths, len = batch_size
+    pad_token_id: int,  # Padding token ID
     loss_fn_eval: nn.Module,  # Expects reduction='none'
-) -> torch.Tensor:  # Shape: [batch_size] - loss per item
+) -> torch.Tensor:  # Shape: [batch_size] - avg loss per item
     """
-    Calculates the average cross-entropy loss ONLY for the choice part
-    for each item in the batch.
-    (Adapted from the first version you provided)
+    Calculates the average cross-entropy loss over the ENTIRE non-padding
+    part of each sequence in the batch.
     """
-    batch_size, seq_len, _ = logits.shape
+    batch_size, seq_len, vocab_size = logits.shape
     device = logits.device
 
-    # Debug info
-    # print(f"Batch size: {batch_size}, Sequence length: {seq_len}")
-    # print(f"Choice start indices: {choice_start_indices}")
-    # print(f"Choice lengths: {choice_lengths}")
+    # Shift logits and labels for next-token prediction
+    # Logits for predicting token at position i+1 are at index i
+    # Labels are the actual tokens starting from position 1
+    shift_logits = logits[..., :-1, :].contiguous()  # [batch, seq_len-1, vocab]
+    shift_labels = input_ids[..., 1:].contiguous()  # [batch, seq_len-1]
 
-    # Shift logits and labels
-    shift_logits = logits[..., :-1, :].contiguous()
-    shift_labels = input_ids[..., 1:].contiguous()  # Shape: [batch_size, seq_len-1]
-
-    # Calculate element-wise loss
-    flat_logits = shift_logits.view(-1, shift_logits.size(-1))
+    # Calculate element-wise loss (output shape: [batch * (seq_len-1)])
+    flat_logits = shift_logits.view(-1, vocab_size)
     flat_labels = shift_labels.view(-1)
-    elementwise_loss = loss_fn_eval(flat_logits, flat_labels)  # Shape: [batch_size * (seq_len-1)]
+    elementwise_loss = loss_fn_eval(flat_logits, flat_labels)
 
     # Reshape loss back to batch dimension
-    loss_per_token = elementwise_loss.view(batch_size, seq_len - 1)  # Shape: [batch_size, seq_len-1]
+    loss_per_token = elementwise_loss.view(batch_size, seq_len - 1)  # [batch, seq_len-1]
 
-    # Create mask for the choice tokens
-    loss_mask = torch.zeros_like(loss_per_token, dtype=torch.float32)
-    num_tokens_per_item = torch.zeros(batch_size, device=device, dtype=torch.float32)
-
-    for i in range(batch_size):
-        start_idx = choice_start_indices[i]
-        length = choice_lengths[i]
-
-        # Debug info
-        # print(f"Item {i}: start_idx={start_idx}, length={length}")
-
-        # FIXED: Handle the case where the choice is at the end of the sequence
-        # For a choice at position N with length L, we need to predict tokens at positions N+1 to N+L
-        # But since we're using shifted logits/labels, we need to adjust:
-        # - For position N+1, we use logits at position N, labels at position N+1
-        # - For position N+L, we use logits at position N+L-1, labels at position N+L
-
-        # Calculate the range of positions in the shifted sequence where we need to calculate loss
-        # For a choice at position N with length L, we need positions N to N+L-1 in the shifted sequence
-        mask_start = start_idx
-        mask_end = start_idx + length - 1  # Changed from length to length-1
-
-        # Clip indices to be valid for loss_per_token (shape [batch_size, seq_len-1])
-        mask_start = max(0, mask_start)
-        mask_end = min(seq_len - 2, mask_end)  # Max index is seq_len - 2 (since we shifted)
-
-        # print(f"  Mask range: [{mask_start}, {mask_end+1})")  # +1 for display purposes
-
-        if mask_start <= mask_end:  # Changed from < to <= to handle single-token choices
-            loss_mask[i, mask_start : mask_end + 1] = 1.0  # +1 to make the end inclusive
-            num_tokens_per_item[i] = float(mask_end - mask_start + 1)  # +1 to count inclusive
-            # print(f"  Valid mask: {mask_end - mask_start + 1} tokens")
-        else:
-            print(f"  Invalid mask: mask_start > mask_end")
-
-    # Debug info
-    # print(f"Number of tokens per item: {num_tokens_per_item}")
-    # print(f"Valid items: {torch.sum(num_tokens_per_item > 0).item()} out of {batch_size}")
+    # Create mask to ignore padding tokens in the labels
+    # Loss is calculated for position i based on label at i+1,
+    # so we mask based on shift_labels (tokens from index 1 onwards)
+    loss_mask = (shift_labels != pad_token_id).float()  # [batch, seq_len-1]
 
     # Apply mask and sum loss per item
     masked_loss = loss_per_token * loss_mask
     summed_loss = masked_loss.sum(dim=1)  # Shape: [batch_size]
 
-    # Calculate average loss per choice token for each item
-    # Avoid division by zero, set loss to infinity for invalid spans
-    avg_loss = torch.full_like(summed_loss, float("inf"))
-    valid_mask = num_tokens_per_item > 0
-    avg_loss[valid_mask] = summed_loss[valid_mask] / num_tokens_per_item[valid_mask]
+    # Count number of non-padding tokens that contributed to the loss
+    num_valid_tokens = loss_mask.sum(dim=1)  # Shape: [batch_size]
 
-    # Debug info
-    # print(f"Final losses: {avg_loss}")
-    # print(f"Number of infinite losses: {torch.sum(torch.isinf(avg_loss)).item()} out of {batch_size}")
+    # Calculate average loss per sequence
+    # Avoid division by zero: if num_valid_tokens is 0, loss is infinite (or 0 if summed_loss is also 0)
+    avg_loss = torch.full_like(summed_loss, float("inf"))
+    # Create a mask for valid items (where num_valid_tokens > 0)
+    valid_mask = num_valid_tokens > 0
+    # Only calculate average loss for valid items
+    avg_loss[valid_mask] = summed_loss[valid_mask] / num_valid_tokens[valid_mask]
 
     return avg_loss
 
@@ -162,22 +90,21 @@ def evaluate_winogrande(
     model: nn.Module,
     tokenizer: Tokenizer,
     loss_fn_eval: nn.Module,  # IMPORTANT: Ensure this has reduction='none'
+    model_seq_len: int,
     max_samples: Optional[int] = None,
-    model_seq_len: Optional[int] = None,
     winogrande_config: str = "winogrande_xl",  # Common config
 ) -> Dict[str, float]:
-    """Evaluates Winogrande (XL) using zero-shot likelihood with batched choices."""
+    """
+    Evaluates Winogrande (XL) using zero-shot likelihood comparison
+    based on the average loss over the ENTIRE constructed sentence for each choice.
+    """
     benchmark_name = f"Winogrande_{winogrande_config}"
-    print(f"\n--- Evaluating {benchmark_name} ---")
+    print(f"\n--- Evaluating {benchmark_name} (Full Sentence Loss) ---")
     model.eval()
 
     # Determine device and sequence length
-    try:
-        device = next(model.parameters()).device
-    except Exception:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    if model_seq_len is None:
-        model_seq_len = getattr(model.config, "max_position_embeddings", 1024)
+
+    device = next(model.parameters()).device
 
     print(f"Using device: {device}, model_seq_len: {model_seq_len}")
 
@@ -187,7 +114,8 @@ def evaluate_winogrande(
 
     # Get padding token ID
     pad_token_id = tokenizer.token_to_id("[PAD]")
-    # print(f"Padding token ID: {pad_token_id}")
+
+    print(f"Using Padding token ID: {pad_token_id}")
 
     # Load dataset
     try:
@@ -201,72 +129,64 @@ def evaluate_winogrande(
 
     correct_predictions = 0
     total_evaluated = 0
-    skipped_items = 0
-    invalid_choices = 0
+    skipped_items_context = 0
+    skipped_items_tokenization = 0
+
+    # Use BFloat16 if available on CUDA, otherwise Float32
+    dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
+    print(f"Using dtype: {dtype}")
 
     for item_idx, item in enumerate(tqdm(dataset, desc=f"Evaluating {benchmark_name}")):
         sentence = item["sentence"]
-        option1 = item["option1"]
-        option2 = item["option2"]
+        option1_text = item["option1"]
+        option2_text = item["option2"]
         answer = item["answer"]  # "1" or "2"
 
         # Extract context
         context_parts = sentence.split("_", 1)
         if len(context_parts) != 2:
-            skipped_items += 1
+            skipped_items_context += 1
             continue  # Skip malformed items
-        context = context_parts[0].strip()
 
-        # Prepare choices
-        choices_text = [option1, option2]
-        prepared_choices = []  # Stores (ids, start, length) or None
-        max_len = 0
-        for i, choice in enumerate(choices_text):
-            prep = prepare_tokens_and_span_info(tokenizer, context, choice, model_seq_len)
-            prepared_choices.append(prep)
-            if prep:
-                max_len = max(max_len, len(prep[0]))
-                # print(f"Item {item_idx}, Choice {i}: Valid preparation with {len(prep[0])} tokens, start={prep[1]}, length={prep[2]}")
-            else:
-                # print(f"Item {item_idx}, Choice {i}: Invalid preparation")
-                invalid_choices += 1
+        full_text_1 = context_parts[0] + option1_text + context_parts[1]
+        full_text_2 = context_parts[0] + option2_text + context_parts[1]
 
-        # Filter out invalid preparations and check if any choice is valid
-        valid_preps = [(i, prep) for i, prep in enumerate(prepared_choices) if prep is not None]
-        if not valid_preps or max_len == 0:
-            skipped_items += 1
-            continue  # Cannot proceed if no choice is valid
+        # Prepare batch inputs - pad to the max length between the two valid options
+        batch_input_ids_list = []
 
-        # Pad and batch valid choices
-        batch_input_ids = []
-        batch_choice_starts = []
-        batch_choice_lengths = []
-        original_indices = []  # Track which original choice (0 or 1) this corresponds to
+        batch_input_ids_list.append(prepare_full_sentence_tokens(tokenizer, full_text_1, model_seq_len))
 
-        for original_idx, (token_ids, start, length) in valid_preps:
-            padding = [pad_token_id] * (max_len - len(token_ids))
-            batch_input_ids.append(token_ids + padding)
-            batch_choice_starts.append(start)
-            batch_choice_lengths.append(length)
-            original_indices.append(original_idx)
+        batch_input_ids_list.append(prepare_full_sentence_tokens(tokenizer, full_text_2, model_seq_len))
 
-        input_ids_tensor = torch.tensor(batch_input_ids, dtype=torch.long, device=device)
-        # print(f"Batch shape: {input_ids_tensor.shape}")
+        max_len = max(len(ids) for ids in batch_input_ids_list) if batch_input_ids_list else 0
+
+        padded_batch_input_ids = []
+        for ids in batch_input_ids_list:
+            padding_len = max_len - len(ids)
+            # Pad on the left, standard practice for causal LMs during inference/eval
+            # although for full sentence loss calculation, padding side matters less
+            # as long as the mask is correct. Let's stick to left padding.
+            padded_ids = ([pad_token_id] * padding_len) + ids
+            padded_batch_input_ids.append(padded_ids)
+
+        input_ids_tensor = torch.tensor(padded_batch_input_ids, dtype=torch.long, device=device)
 
         # Run Inference
-        with torch.no_grad(), autocast(device_type=device.type, dtype=torch.bfloat16):
-            logits, _ = model(input_ids_tensor, True)
-            # print(f"Logits shape: {logits.shape}")
+
+        with torch.no_grad(), autocast(device_type=device.type, dtype=dtype):
+            # Assuming model returns (logits, ...) or just logits
+            logits, _ = model(input_ids_tensor, True)  # Pass True for past_key_values if needed by model
 
             # Calculate Losses
-        batch_losses = calculate_batch_span_loss(
-            logits, input_ids_tensor, batch_choice_starts, batch_choice_lengths, loss_fn_eval
-        )  # Tensor of losses for items in the batch
+            batch_losses = calculate_batch_full_sequence_loss(
+                logits, input_ids_tensor, pad_token_id, loss_fn_eval
+            )  # Tensor of avg losses for items in the batch
 
         # Map losses back and find best choice
-        all_choice_losses = [float("inf")] * len(choices_text)
-        for i, loss in enumerate(batch_losses):
-            all_choice_losses[original_indices[i]] = loss.item()  # Map back to original index (0 or 1)
+        all_choice_losses = [float("inf")] * 2  # Initialize losses for option1, option2
+
+        for i, loss in enumerate(batch_losses.cpu().numpy()):  # Move losses to CPU for easier handling
+            all_choice_losses[i] = loss if not torch.isnan(torch.tensor(loss)).item() else float("inf")
 
         # Find minimum loss among calculated losses
         min_loss = float("inf")
@@ -283,12 +203,14 @@ def evaluate_winogrande(
                 if predicted_idx == true_label_idx:
                     correct_predictions += 1
             except (ValueError, TypeError):
-                print(f"Warning: Invalid label '{answer}' encountered during checking.")
+                print(f"Warning: Invalid label '{answer}' encountered.")
                 # Don't count as correct, but still evaluated.
-            total_evaluated += 1  # Increment only if a valid prediction was possible
+
+            total_evaluated += 1  # Increment only if a valid comparison was possible
 
     accuracy = correct_predictions / total_evaluated if total_evaluated > 0 else 0.0
     print(f"--- Finished {benchmark_name}: Accuracy: {accuracy:.4f} ({correct_predictions}/{total_evaluated}) ---")
-    print(f"Skipped items: {skipped_items}, Invalid choices: {invalid_choices}")
+    print(f"Skipped items (bad context): {skipped_items_context}")
+    print(f"Skipped items (tokenization/inference error): {skipped_items_tokenization}")
     model.train()  # Set model back to training mode
     return {"accuracy": accuracy, "evaluated_samples": total_evaluated}
