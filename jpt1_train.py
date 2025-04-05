@@ -76,7 +76,7 @@ def run_benchmarks(model: nn.Module, tokenizer: Tokenizer, device: str, local_ra
     loss_fn_eval = nn.CrossEntropyLoss(ignore_index=pad_token_id, reduction="none")
 
     # Define max samples for benchmarks (optional, set to None or a number)
-    max_benchmark_samples = 100
+    max_benchmark_samples = None
 
     # Run benchmarks
     hellaswag_results = evaluate_hellaswag(
