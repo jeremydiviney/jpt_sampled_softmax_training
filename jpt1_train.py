@@ -526,7 +526,7 @@ def train_model(
                                 f"tokens_per_second: {tokens_per_second:.2f}"
                             )
 
-                        if log_step_count % 5 == 0:
+                        if log_step_count % 200 == 0:
                             benchmark_results = run_benchmarks(model, dataset.tokenizer, device, local_rank, distributed, False)
                             wandb.log(benchmark_results)
 
@@ -741,7 +741,7 @@ if __name__ == "__main__":
 
         print(f"Initialized process {local_rank}/{world_size}")
 
-    bs = 16
+    bs = 24
     # Define experiments
     experiments: list[dict] = {
         "seq_len": [1024],
