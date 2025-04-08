@@ -751,7 +751,7 @@ if __name__ == "__main__":
         "lr": [0.0008],
         "num_head": [12],
         "n_layers": [12],
-        "jpt_embed_dim": [768],
+        "jpt_embed_dim": [869],
         "dropout": [0.0],
         "vocab_size": [50304],
         "output_type": [JPT1ModelType.STANDARD_SAMPLED, JPT1ModelType.STANDARD_SAMPLED],
