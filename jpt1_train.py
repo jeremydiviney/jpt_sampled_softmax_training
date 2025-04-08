@@ -749,7 +749,7 @@ if __name__ == "__main__":
         "epochs": [1],
         "batch_size": [bs],
         "lr": [0.0008],
-        "num_head": [12],
+        "num_head": [14],
         "n_layers": [12],
         "jpt_embed_dim": [896],
         "dropout": [0.0],
