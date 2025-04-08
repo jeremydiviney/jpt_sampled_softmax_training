@@ -745,7 +745,7 @@ if __name__ == "__main__":
     # Define experiments
     experiments: list[dict] = {
         "seq_len": [1024],
-        "token_space_dim": [768],
+        "token_space_dim": [869],
         "epochs": [1],
         "batch_size": [bs],
         "lr": [0.0008],
