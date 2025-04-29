@@ -181,6 +181,8 @@ class Fineweb10BDataset(Dataset):
         self.cache_size = cache_size  # Number of tokenized documents to keep in memory
         self.cache = {}  # Dictionary to store cached tokens {data_row_idx: token_ids}
         self.cache_priority = []  # Min-heap to track priorities (token_length, data_row_idx) for cache eviction
+        self.token_counts = []
+        self.data_stride_indices = []
 
         self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
         self.eot_token_id = self.tokenizer.token_to_id("<EOT>")
@@ -194,6 +196,8 @@ class Fineweb10BDataset(Dataset):
 
         self.selection_table = []
         self.selection_table_indices = []
+
+        self.stride_indices = []
 
         # --- Splitting and Filtering Logic ---
         master_array = np.array(self.selection_table_master)
@@ -229,17 +233,20 @@ class Fineweb10BDataset(Dataset):
 
         # Apply the final mask to get the indices of the documents we will use
         self.selection_table_indices = indices[final_mask]
-        # Calculate the cumulative token counts *only for the selected documents*
-        self.selection_table = np.cumsum(token_counts[final_mask])
+
+        self.token_counts = token_counts[final_mask]
+
+        self.stride_counts = 1 + (self.token_counts - 1) // self.data_stride
+        self.selection_table = np.cumsum(self.stride_counts)
 
         self.token_list = tokenizer.get_vocab()
         self.token_count = self.selection_table[-1].item()
 
     def get_data_chunk(self, idx: int):
 
-        adjusted_idx_value = idx * self.data_stride
+        pre_data_row_idx = bisect_left(self.selection_table, idx)
 
-        pre_data_row_idx = bisect_left(self.selection_table, adjusted_idx_value)
+        relative_data_chunk = idx - self.selection_table[pre_data_row_idx]
 
         data_row_idx = int(self.selection_table_indices[pre_data_row_idx])  # lookup the master data index for the row
 
@@ -270,25 +277,13 @@ class Fineweb10BDataset(Dataset):
                 self.cache[data_row_idx] = full_idx_tokens
                 heappush(self.cache_priority, (token_length, data_row_idx))
 
-        data_row_chunks = (len(full_idx_tokens) // self.data_stride) + 1
-        data_row_remainder = len(full_idx_tokens) % self.data_stride
-
-        # if exactly n chunks, then we need to remove one chunk
-        if data_row_remainder == 0:
-            data_row_chunks -= 1
-
-        chuck_selection_idx = 0 if data_row_chunks == 1 else random.randint(0, data_row_chunks - 1)
-
-        # Calculate chunk size based on sequence length
-        chunk_size = self.seq_len + 1  # +1 for the target token
-
         # Calculate start and end positions for the chunk
-        start_pos = chuck_selection_idx * self.data_stride
+        start_pos = relative_data_chunk * self.data_stride
 
-        end_pos = min(start_pos + chunk_size, len(full_idx_tokens))
+        end_pos = min(start_pos + self.seq_len, len(full_idx_tokens))
 
-        if (end_pos - start_pos) < chunk_size:
-            start_pos = max(0, end_pos - chunk_size)
+        if (end_pos - start_pos) < self.seq_len:
+            start_pos = max(0, end_pos - self.seq_len)
 
         # Extract the chunk, handling potential end of text
         idx_chunk = full_idx_tokens[start_pos:end_pos]
@@ -296,7 +291,7 @@ class Fineweb10BDataset(Dataset):
 
     def __len__(self) -> int:
 
-        return math.floor(self.selection_table[-1] / self.data_stride)
+        return self.selection_table[-1]
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
 
